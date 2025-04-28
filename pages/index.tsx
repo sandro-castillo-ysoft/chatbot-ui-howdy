@@ -50,13 +50,14 @@ const Home: React.FC<HomeProps> = ({
   defaultModelId,
 }) => {
   const { t } = useTranslation('chat');
+  const [sessionId] = useState(() => uuidv4())
 
   // STATE ----------------------------------------------
 
   const [apiKey, setApiKey] = useState<string>('');
   const [pluginKeys, setPluginKeys] = useState<PluginKey[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-  const [lightMode, setLightMode] = useState<'dark' | 'light'>('dark');
+  const [lightMode, setLightMode] = useState<'dark' | 'light'>('light');
   const [messageIsStreaming, setMessageIsStreaming] = useState<boolean>(false);
 
   const [modelError, setModelError] = useState<ErrorMessage | null>(null);
@@ -86,204 +87,80 @@ const Home: React.FC<HomeProps> = ({
     deleteCount = 0,
     plugin: Plugin | null = null,
   ) => {
-    if (selectedConversation) {
-      let updatedConversation: Conversation;
+    if (!selectedConversation) return;
 
-      if (deleteCount) {
-        const updatedMessages = [...selectedConversation.messages];
-        for (let i = 0; i < deleteCount; i++) {
-          updatedMessages.pop();
-        }
+    let updatedConversation: Conversation;
 
-        updatedConversation = {
-          ...selectedConversation,
-          messages: [...updatedMessages, message],
-        };
-      } else {
-        updatedConversation = {
-          ...selectedConversation,
-          messages: [...selectedConversation.messages, message],
-        };
-      }
+    if (deleteCount) {
+      const updatedMessages = [...selectedConversation.messages];
+      for (let i = 0; i < deleteCount; i++) updatedMessages.pop();
 
-      setSelectedConversation(updatedConversation);
-      setLoading(true);
-      setMessageIsStreaming(true);
-
-      const chatBody: ChatBody = {
-        model: updatedConversation.model,
-        messages: updatedConversation.messages,
-        key: apiKey,
-        prompt: updatedConversation.prompt,
+      updatedConversation = {
+        ...selectedConversation,
+        messages: [...updatedMessages, message],
       };
+      
+    } else {
+      updatedConversation = {
+        ...selectedConversation,
+        messages: [...selectedConversation.messages, message],
+      };
+    }
 
-      const endpoint = getEndpoint(plugin);
-      let body;
+    setSelectedConversation(updatedConversation);
+    setLoading(true);
 
-      if (!plugin) {
-        body = JSON.stringify(chatBody);
-      } else {
-        body = JSON.stringify({
-          ...chatBody,
-          googleAPIKey: pluginKeys
-            .find((key) => key.pluginId === 'google-search')
-            ?.requiredKeys.find((key) => key.key === 'GOOGLE_API_KEY')?.value,
-          googleCSEId: pluginKeys
-            .find((key) => key.pluginId === 'google-search')
-            ?.requiredKeys.find((key) => key.key === 'GOOGLE_CSE_ID')?.value,
-        });
-      }
-
-      const controller = new AbortController();
-      const response = await fetch(endpoint, {
+    try {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        signal: controller.signal,
-        body,
+        body: JSON.stringify({
+          prompt: message.content,
+          sessionId,
+        }),
       });
 
       if (!response.ok) {
-        setLoading(false);
-        setMessageIsStreaming(false);
-        toast.error(response.statusText);
+        toast.error(`Error ${response.status}: ${response.statusText}`)
+        setLoading(true)
         return;
       }
 
-      const data = response.body;
-
-      if (!data) {
-        setLoading(false);
-        setMessageIsStreaming(false);
-        return;
+      const data = await response.json();
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: data.message || 'No response from assistant'
       }
 
-      if (!plugin) {
-        if (updatedConversation.messages.length === 1) {
-          const { content } = message;
-          const customName =
-            content.length > 30 ? content.substring(0, 30) + '...' : content;
+      const finalMessages = [...updatedConversation.messages, assistantMessage];
 
-          updatedConversation = {
-            ...updatedConversation,
-            name: customName,
-          };
-        }
+      const newConversation: Conversation = {
+        ...updatedConversation,
+        messages: finalMessages,
+      };
 
-        setLoading(false);
+      setSelectedConversation(newConversation);
+      setConversations((prev) => 
+        prev.map((c) => (c.id === newConversation.id ? newConversation : c)),
+      );
 
-        const reader = data.getReader();
-        const decoder = new TextDecoder();
-        let done = false;
-        let isFirst = true;
-        let text = '';
+      saveConversation(newConversation);
+      saveConversations([
+        ...conversations.filter((c) => c.id !== newConversation.id),
+        newConversation
+      ]);
 
-        while (!done) {
-          if (stopConversationRef.current === true) {
-            controller.abort();
-            done = true;
-            break;
-          }
-          const { value, done: doneReading } = await reader.read();
-          done = doneReading;
-          const chunkValue = decoder.decode(value);
 
-          text += chunkValue;
-
-          if (isFirst) {
-            isFirst = false;
-            const updatedMessages: Message[] = [
-              ...updatedConversation.messages,
-              { role: 'assistant', content: chunkValue },
-            ];
-
-            updatedConversation = {
-              ...updatedConversation,
-              messages: updatedMessages,
-            };
-
-            setSelectedConversation(updatedConversation);
-          } else {
-            const updatedMessages: Message[] = updatedConversation.messages.map(
-              (message, index) => {
-                if (index === updatedConversation.messages.length - 1) {
-                  return {
-                    ...message,
-                    content: text,
-                  };
-                }
-
-                return message;
-              },
-            );
-
-            updatedConversation = {
-              ...updatedConversation,
-              messages: updatedMessages,
-            };
-
-            setSelectedConversation(updatedConversation);
-          }
-        }
-
-        saveConversation(updatedConversation);
-
-        const updatedConversations: Conversation[] = conversations.map(
-          (conversation) => {
-            if (conversation.id === selectedConversation.id) {
-              return updatedConversation;
-            }
-
-            return conversation;
-          },
-        );
-
-        if (updatedConversations.length === 0) {
-          updatedConversations.push(updatedConversation);
-        }
-
-        setConversations(updatedConversations);
-        saveConversations(updatedConversations);
-
-        setMessageIsStreaming(false);
-      } else {
-        const { answer } = await response.json();
-
-        const updatedMessages: Message[] = [
-          ...updatedConversation.messages,
-          { role: 'assistant', content: answer },
-        ];
-
-        updatedConversation = {
-          ...updatedConversation,
-          messages: updatedMessages,
-        };
-
-        setSelectedConversation(updatedConversation);
-        saveConversation(updatedConversation);
-
-        const updatedConversations: Conversation[] = conversations.map(
-          (conversation) => {
-            if (conversation.id === selectedConversation.id) {
-              return updatedConversation;
-            }
-
-            return conversation;
-          },
-        );
-
-        if (updatedConversations.length === 0) {
-          updatedConversations.push(updatedConversation);
-        }
-
-        setConversations(updatedConversations);
-        saveConversations(updatedConversations);
-
-        setLoading(false);
-        setMessageIsStreaming(false);
-      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to fetch response from OpenAI assistant')
+    } finally {
+      setLoading(false);
+      setMessageIsStreaming(false);
     }
+      
   };
 
   // FETCH MODELS ----------------------------------------------
@@ -755,51 +632,6 @@ const Home: React.FC<HomeProps> = ({
           </div>
 
           <div className="flex h-full w-full pt-[48px] sm:pt-0">
-            {showSidebar ? (
-              <div>
-                <Chatbar
-                  loading={messageIsStreaming}
-                  conversations={conversations}
-                  lightMode={lightMode}
-                  selectedConversation={selectedConversation}
-                  apiKey={apiKey}
-                  pluginKeys={pluginKeys}
-                  folders={folders.filter((folder) => folder.type === 'chat')}
-                  onToggleLightMode={handleLightMode}
-                  onCreateFolder={(name) => handleCreateFolder(name, 'chat')}
-                  onDeleteFolder={handleDeleteFolder}
-                  onUpdateFolder={handleUpdateFolder}
-                  onNewConversation={handleNewConversation}
-                  onSelectConversation={handleSelectConversation}
-                  onDeleteConversation={handleDeleteConversation}
-                  onUpdateConversation={handleUpdateConversation}
-                  onApiKeyChange={handleApiKeyChange}
-                  onClearConversations={handleClearConversations}
-                  onExportConversations={handleExportData}
-                  onImportConversations={handleImportConversations}
-                  onPluginKeyChange={handlePluginKeyChange}
-                  onClearPluginKey={handleClearPluginKey}
-                />
-
-                <button
-                  className="fixed top-5 left-[270px] z-50 h-7 w-7 hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:left-[270px] sm:h-8 sm:w-8 sm:text-neutral-700"
-                  onClick={handleToggleChatbar}
-                >
-                  <IconArrowBarLeft />
-                </button>
-                <div
-                  onClick={handleToggleChatbar}
-                  className="absolute top-0 left-0 z-10 h-full w-full bg-black opacity-70 sm:hidden"
-                ></div>
-              </div>
-            ) : (
-              <button
-                className="fixed top-2.5 left-4 z-50 h-7 w-7 text-white hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:left-4 sm:h-8 sm:w-8 sm:text-neutral-700"
-                onClick={handleToggleChatbar}
-              >
-                <IconArrowBarRight />
-              </button>
-            )}
 
             <div className="flex flex-1">
               <Chat
@@ -819,37 +651,6 @@ const Home: React.FC<HomeProps> = ({
               />
             </div>
 
-            {showPromptbar ? (
-              <div>
-                <Promptbar
-                  prompts={prompts}
-                  folders={folders.filter((folder) => folder.type === 'prompt')}
-                  onCreatePrompt={handleCreatePrompt}
-                  onUpdatePrompt={handleUpdatePrompt}
-                  onDeletePrompt={handleDeletePrompt}
-                  onCreateFolder={(name) => handleCreateFolder(name, 'prompt')}
-                  onDeleteFolder={handleDeleteFolder}
-                  onUpdateFolder={handleUpdateFolder}
-                />
-                <button
-                  className="fixed top-5 right-[270px] z-50 h-7 w-7 hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:right-[270px] sm:h-8 sm:w-8 sm:text-neutral-700"
-                  onClick={handleTogglePromptbar}
-                >
-                  <IconArrowBarRight />
-                </button>
-                <div
-                  onClick={handleTogglePromptbar}
-                  className="absolute top-0 left-0 z-10 h-full w-full bg-black opacity-70 sm:hidden"
-                ></div>
-              </div>
-            ) : (
-              <button
-                className="fixed top-2.5 right-4 z-50 h-7 w-7 text-white hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:right-4 sm:h-8 sm:w-8 sm:text-neutral-700"
-                onClick={handleTogglePromptbar}
-              >
-                <IconArrowBarLeft />
-              </button>
-            )}
           </div>
         </main>
       )}

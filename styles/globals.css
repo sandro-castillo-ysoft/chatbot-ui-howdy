@@ -41,3 +41,12 @@ html {
 pre:has(div.codeblock) {
   padding: 0;
 }
+
+.dev-only {
+  display: none;
+}
+
+.banner-logo {
+  max-width: 50%;
+  max-height: 50px;
+}

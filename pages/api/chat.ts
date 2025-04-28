@@ -1,3 +1,7 @@
+export const config = {
+  runtime: 'nodejs',
+};
+
 import { ChatBody, Message } from '@/types/chat';
 import { DEFAULT_SYSTEM_PROMPT } from '@/utils/app/const';
 import { OpenAIError, OpenAIStream } from '@/utils/server';
@@ -6,55 +10,51 @@ import { Tiktoken, init } from '@dqbd/tiktoken/lite/init';
 // @ts-expect-error
 import wasm from '../../node_modules/@dqbd/tiktoken/lite/tiktoken_bg.wasm?module';
 
-export const config = {
-  runtime: 'edge',
-};
+import { NextApiRequest, NextApiResponse } from 'next';
+import OpenAI from 'openai';
+import { error } from 'console';
 
-const handler = async (req: Request): Promise<Response> => {
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
+
+const ASSISTANT_ID = process.env.OPENAI_ASSIST_KEY_DEFAULT as string;
+const threadMap = new Map<string, string>()
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const { prompt, sessionId } = req.body;
+
   try {
-    const { model, messages, key, prompt } = (await req.json()) as ChatBody;
-
-    await init((imports) => WebAssembly.instantiate(wasm, imports));
-    const encoding = new Tiktoken(
-      tiktokenModel.bpe_ranks,
-      tiktokenModel.special_tokens,
-      tiktokenModel.pat_str,
-    );
-
-    let promptToSend = prompt;
-    if (!promptToSend) {
-      promptToSend = DEFAULT_SYSTEM_PROMPT;
+    let threadId = threadMap.get(sessionId)
+    if(!threadId) {
+      const thread = await openai.beta.threads.create();
+      threadId = thread.id;
+      threadMap.set(sessionId, threadId);
     }
 
-    const prompt_tokens = encoding.encode(promptToSend);
+    await openai.beta.threads.messages.create(threadId, {
+      role: 'user',
+      content: prompt,
+    });
 
-    let tokenCount = prompt_tokens.length;
-    let messagesToSend: Message[] = [];
+    const run = await openai.beta.threads.runs.create(threadId, {
+      assistant_id: ASSISTANT_ID,
+    });
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      const tokens = encoding.encode(message.content);
-
-      if (tokenCount + tokens.length + 1000 > model.tokenLimit) {
-        break;
-      }
-      tokenCount += tokens.length;
-      messagesToSend = [message, ...messagesToSend];
+    let runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+    while (runStatus.status != 'completed') {
+      await new Promise((r) => setTimeout(r, 250));
+      runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
     }
 
-    encoding.free();
+    const messages = await openai.beta.threads.messages.list(threadId);
 
-    const stream = await OpenAIStream(model, promptToSend, key, messagesToSend);
+    const assistantReply = messages.data.find(m => m.role === 'assistant');
+    const content = assistantReply?.content[0]?.text?.value || '⚠️ No assistant response';
 
-    return new Response(stream);
-  } catch (error) {
-    console.error(error);
-    if (error instanceof OpenAIError) {
-      return new Response('Error', { status: 500, statusText: error.message });
-    } else {
-      return new Response('Error', { status: 500 });
-    }
+    res.status(200).json({ message: content });
+
+
+  } catch (err: any) {
+    console.error(err?.response?.data || err.Message);
+    res.status(500).json({error: 'OpenAI Chat completion failed'})
   }
-};
-
-export default handler;
+}
