@@ -48,7 +48,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const messages = await openai.beta.threads.messages.list(threadId);
 
     const assistantReply = messages.data.find(m => m.role === 'assistant');
-    const content = assistantReply?.content[0]?.text?.value || '⚠️ No assistant response';
+
+    const contentBlock = assistantReply?.content?.[0];
+    let content = '⚠️ No assistant response';
+
+    if (contentBlock  && 'text' in contentBlock) {
+      contentBlock.text.value;
+    }
 
     res.status(200).json({ message: content });
 
