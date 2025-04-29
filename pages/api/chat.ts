@@ -53,7 +53,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let content = '⚠️ No assistant response';
 
     if (contentBlock  && 'text' in contentBlock) {
-      contentBlock.text.value;
+      content = contentBlock.text.value;
     }
 
     res.status(200).json({ message: content });
