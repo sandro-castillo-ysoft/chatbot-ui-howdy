@@ -213,7 +213,7 @@ export const Chat: FC<Props> = memo(
                         </div>
                       ) : (
                         <div>
-                          <img src='resources/logo.svg' />
+                          <img src='resources/logo.png' />
                         </div>
                       )}
                     </div>
